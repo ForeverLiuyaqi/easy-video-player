@@ -4,9 +4,11 @@ import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.annotation.TargetApi;
 import android.content.Context;
+import android.content.res.ColorStateList;
 import android.content.res.TypedArray;
 import android.graphics.Color;
 import android.graphics.Matrix;
+import android.graphics.PorterDuff;
 import android.graphics.SurfaceTexture;
 import android.graphics.drawable.Drawable;
 import android.media.AudioManager;
@@ -25,6 +27,8 @@ import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.annotation.StringRes;
 import android.support.v4.content.ContextCompat;
+import android.support.v4.graphics.drawable.DrawableCompat;
+import android.support.v4.view.ViewCompat;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.Gravity;
@@ -360,7 +364,8 @@ public class EasyVideoPlayer extends FrameLayout implements IUserMethods, Textur
             if (mCallback != null)
                 mCallback.onPreparing(this);
             mPlayer.setSurface(mSurface);
-            if (mSource.getScheme().equals("http") || mSource.getScheme().equals("https")) {
+            if (mSource.getScheme() != null &&
+                    (mSource.getScheme().equals("http") || mSource.getScheme().equals("https"))) {
                 LOG("Loading web URI: " + mSource.toString());
                 mPlayer.setDataSource(mSource.toString());
             } else {
@@ -393,11 +398,19 @@ public class EasyVideoPlayer extends FrameLayout implements IUserMethods, Textur
     public void showControls() {
         if (mControlsDisabled || isControlsShown() || mSeeker == null)
             return;
+
         mControlsFrame.animate().cancel();
         mControlsFrame.setAlpha(0f);
         mControlsFrame.setVisibility(View.VISIBLE);
-        mControlsFrame.animate().alpha(1f).setListener(null)
-                .setInterpolator(new DecelerateInterpolator()).start();
+        mControlsFrame.animate().alpha(1f)
+                .setInterpolator(new DecelerateInterpolator())
+                .setListener(new AnimatorListenerAdapter() {
+                    @Override
+                    public void onAnimationEnd(Animator animation) {
+                        if (mAutoFullscreen)
+                            setFullscreen(false);
+                    }
+                }).start();
     }
 
     @Override
@@ -412,8 +425,10 @@ public class EasyVideoPlayer extends FrameLayout implements IUserMethods, Textur
                 .setListener(new AnimatorListenerAdapter() {
                     @Override
                     public void onAnimationEnd(Animator animation) {
+                        setFullscreen(true);
+
                         if (mControlsFrame != null)
-                            mControlsFrame.setVisibility(View.GONE);
+                            mControlsFrame.setVisibility(View.INVISIBLE);
                     }
                 }).start();
     }
@@ -430,10 +445,8 @@ public class EasyVideoPlayer extends FrameLayout implements IUserMethods, Textur
             return;
         if (isControlsShown()) {
             hideControls();
-            setFullscreen(true);
         } else {
             showControls();
-            setFullscreen(false);
         }
     }
 
@@ -488,7 +501,7 @@ public class EasyVideoPlayer extends FrameLayout implements IUserMethods, Textur
     public void start() {
         if (mPlayer == null) return;
         mPlayer.start();
-        mCallback.onStarted(this);
+        if (mCallback != null) mCallback.onStarted(this);
         if (mHandler == null) mHandler = new Handler();
         mHandler.post(mUpdateCounters);
         mBtnPlayPause.setImageDrawable(mPauseDrawable);
@@ -788,12 +801,10 @@ public class EasyVideoPlayer extends FrameLayout implements IUserMethods, Textur
         if (view.getId() == R.id.btnPlayPause) {
             if (mPlayer.isPlaying()) {
                 pause();
-                setFullscreen(false);
             } else {
                 if (mHideControlsOnPlay && !mControlsDisabled)
                     hideControls();
                 start();
-                setFullscreen(true);
             }
         } else if (view.getId() == R.id.btnRestart) {
             seekTo(0);
@@ -849,9 +860,12 @@ public class EasyVideoPlayer extends FrameLayout implements IUserMethods, Textur
     // Utilities
 
     private static void LOG(String message, Object... args) {
-        if (args != null)
-            message = String.format(message, args);
-        Log.d("EasyVideoPlayer", message);
+        try {
+            if (args != null)
+                message = String.format(message, args);
+            Log.d("EasyVideoPlayer", message);
+        } catch (Exception ignored) {
+        }
     }
 
     private void invalidateActions() {
@@ -915,33 +929,61 @@ public class EasyVideoPlayer extends FrameLayout implements IUserMethods, Textur
         else throw new RuntimeException(e);
     }
 
+    private static void setTint(@NonNull SeekBar seekBar, @ColorInt int color) {
+        ColorStateList s1 = ColorStateList.valueOf(color);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            seekBar.setThumbTintList(s1);
+            seekBar.setProgressTintList(s1);
+        } else if (Build.VERSION.SDK_INT > Build.VERSION_CODES.GINGERBREAD_MR1) {
+            Drawable progressDrawable = DrawableCompat.wrap(seekBar.getProgressDrawable());
+            seekBar.setProgressDrawable(progressDrawable);
+            DrawableCompat.setTintList(progressDrawable, s1);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+                Drawable thumbDrawable = DrawableCompat.wrap(seekBar.getThumb());
+                DrawableCompat.setTintList(thumbDrawable, s1);
+                seekBar.setThumb(thumbDrawable);
+            }
+        } else {
+            PorterDuff.Mode mode = PorterDuff.Mode.SRC_IN;
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.GINGERBREAD_MR1) {
+                mode = PorterDuff.Mode.MULTIPLY;
+            }
+            if (seekBar.getIndeterminateDrawable() != null)
+                seekBar.getIndeterminateDrawable().setColorFilter(color, mode);
+            if (seekBar.getProgressDrawable() != null)
+                seekBar.getProgressDrawable().setColorFilter(color, mode);
+        }
+    }
+
     private void invalidateThemeColors() {
         final int labelColor = Util.isColorDark(mThemeColor) ? Color.WHITE : Color.BLACK;
         mControlsFrame.setBackgroundColor(Util.adjustAlpha(mThemeColor, 0.85f));
         mLabelDuration.setTextColor(labelColor);
         mLabelPosition.setTextColor(labelColor);
-    }
+        setTint(mSeeker, labelColor);
 
-    @TargetApi(Build.VERSION_CODES.ICE_CREAM_SANDWICH)
-    private int fullscreenFlags() {
-        int flags = View.SYSTEM_UI_FLAG_LOW_PROFILE | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
-            flags |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                    | View.SYSTEM_UI_FLAG_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
-        }
-
-        return flags;
     }
 
     @TargetApi(Build.VERSION_CODES.ICE_CREAM_SANDWICH)
     private void setFullscreen(boolean fullscreen) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
             if (mAutoFullscreen) {
-                setSystemUiVisibility(fullscreen ? fullscreenFlags() : View.SYSTEM_UI_FLAG_VISIBLE);
+                int flags = !fullscreen ? 0 : View.SYSTEM_UI_FLAG_LOW_PROFILE;
+
+                ViewCompat.setFitsSystemWindows(mControlsFrame, !fullscreen);
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                    flags |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+                    if (fullscreen) {
+                        flags |= View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                | View.SYSTEM_UI_FLAG_FULLSCREEN
+                                | View.SYSTEM_UI_FLAG_IMMERSIVE;
+                    }
+                }
+
+                mClickFrame.setSystemUiVisibility(flags);
             }
         }
     }
